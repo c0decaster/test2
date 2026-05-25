@@ -48,6 +48,8 @@ ZEND_BEGIN_MODULE_GLOBALS(vld)
 	FILE *path_dump_file;
 	int dump_paths;
 	int sg_decode;
+	char *sg_offset;
+	int sg_require_loader;
 ZEND_END_MODULE_GLOBALS(vld) 
 
 int vld_printf(FILE *stream, const char* fmt, ...);

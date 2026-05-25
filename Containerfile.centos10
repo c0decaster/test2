@@ -1,0 +1,50 @@
+# CentOS Stream 10 oriented container build for vld-sourceguardian.
+# The host server only needs podman or docker. PHP build tools, the extension,
+# and optional SourceGuardian loader files live inside the container.
+
+FROM quay.io/centos/centos:stream10
+
+ARG PHP_BIN=php
+ARG SG_LOADER_DIR=/opt/sourceguardian
+ARG VLD_SG_OFFSET=0x211010
+
+ENV SG_LOADER_DIR=${SG_LOADER_DIR} \
+    VLD_SG_OFFSET=${VLD_SG_OFFSET} \
+    VLD_EXTENSION_DIR=/usr/local/lib/php/extensions/vld-sourceguardian
+
+RUN dnf -y update && \
+    dnf -y install dnf-plugins-core epel-release || true
+
+RUN dnf -y install \
+        autoconf \
+        automake \
+        file \
+        findutils \
+        gcc \
+        gcc-c++ \
+        glibc-devel \
+        make \
+        php \
+        php-cli \
+        php-devel \
+        php-common \
+        php-opcache \
+        procps-ng \
+        tar \
+        which \
+        zlib-devel && \
+    dnf clean all
+
+WORKDIR /usr/src/vld-sourceguardian
+COPY . /usr/src/vld-sourceguardian
+
+RUN chmod +x scripts/*.sh || true && \
+    scripts/build-extension.sh && \
+    mkdir -p /etc/php.d && \
+    scripts/install-extension.sh
+
+VOLUME ["/work", "/opt/sourceguardian"]
+WORKDIR /work
+
+ENTRYPOINT ["/usr/src/vld-sourceguardian/scripts/run-vld-container.sh"]
+CMD ["--help"]

@@ -23,6 +23,11 @@
 #include "srm_oparray.h"
 #include "php_globals.h"
 #include "helper.h"
+#include <stdlib.h>
+#include <errno.h>
+#if defined(__unix__) || defined(__linux__)
+# include <dlfcn.h>
+#endif
 
 #if PHP_VERSION_ID >= 50300
 # define APPLY_TSRMLS_CC TSRMLS_CC
@@ -48,6 +53,9 @@ int fix_jmpznz(zend_execute_data * data TSRMLS_DC, void * addr);
 int fix_new(zend_execute_data * data TSRMLS_DC, void * addr);
 int fix_catch(zend_execute_data * data TSRMLS_DC, void * addr);
 static void fix_op_array(zend_op_array *op_array TSRMLS_DC);
+static unsigned long vld_sg_get_offset(void);
+static int vld_sg_loader_available(void);
+static void vld_sg_environment_warn_once(void);
 
 static char executed_filename[256];
 static zend_op_array* (*old_compile_file)(zend_file_handle* file_handle, int type TSRMLS_DC);
@@ -124,6 +132,8 @@ PHP_INI_BEGIN()
 	STD_PHP_INI_ENTRY("vld.save_paths",   "0", PHP_INI_SYSTEM, OnUpdateBool, save_paths,   zend_vld_globals, vld_globals)
 	STD_PHP_INI_ENTRY("vld.dump_paths",   "1", PHP_INI_SYSTEM, OnUpdateBool, dump_paths,   zend_vld_globals, vld_globals)
 	STD_PHP_INI_ENTRY("vld.sg_decode",    "0", PHP_INI_SYSTEM, OnUpdateBool, sg_decode,    zend_vld_globals, vld_globals)
+	STD_PHP_INI_ENTRY("vld.sg_offset",    "0x211010", PHP_INI_SYSTEM, OnUpdateString, sg_offset, zend_vld_globals, vld_globals)
+	STD_PHP_INI_ENTRY("vld.sg_require_loader", "0", PHP_INI_SYSTEM, OnUpdateBool, sg_require_loader, zend_vld_globals, vld_globals)
 PHP_INI_END()
  
 static void vld_init_globals(zend_vld_globals *vg)
@@ -139,6 +149,8 @@ static void vld_init_globals(zend_vld_globals *vg)
 	vg->save_paths   = 0;
 	vg->verbosity    = 1;
 	vg->sg_decode    = 0;
+	vg->sg_offset    = "0x211010";
+	vg->sg_require_loader = 0;
 }
 
 
@@ -440,10 +452,13 @@ static zend_op_array *vld_compile_file(zend_file_handle *file_handle, int type T
 	}
 
 	op_array = old_compile_file (file_handle, type TSRMLS_CC);
+	if (!op_array) {
+		return NULL;
+	}
 
 	// if decoding source guardian, the compiled stuff is encoded
 	// no need to dump the wrapper
-	if (VLD_G(sg_decode))
+	if (VLD_G(sg_decode) && op_array)
 	{
 		return op_array;
 	}
@@ -489,18 +504,85 @@ static zend_op_array *vld_compile_string(zval *source_string, char *filename TSR
 	return op_array;
 }
 
+static unsigned long vld_sg_get_offset(void)
+{
+	const char *configured = VLD_G(sg_offset);
+	char *end = NULL;
+	unsigned long offset;
+
+	if (!configured || !configured[0]) {
+		configured = "0x211010";
+	}
+
+	errno = 0;
+	offset = strtoul(configured, &end, 0);
+	if (errno != 0 || end == configured || (end && *end != '\0')) {
+		php_printf("Warning: invalid vld.sg_offset='%s', falling back to 0x211010.\n", configured);
+		return 0x211010UL;
+	}
+
+	return offset;
+}
+
+static int vld_sg_loader_available(void)
+{
+#if defined(__unix__) || defined(__linux__)
+	/*
+	 * This check is intentionally soft. SourceGuardian can be loaded either
+	 * by PHP as a Zend extension or preloaded inside a container. We only use
+	 * common symbols as hints and never require them unless requested through
+	 * vld.sg_require_loader=1.
+	 */
+	if (dlsym(RTLD_DEFAULT, "ixed_init") ||
+		dlsym(RTLD_DEFAULT, "sourceguardian_loader_init") ||
+		dlsym(RTLD_DEFAULT, "sg_load_file")) {
+		return 1;
+	}
+#endif
+	return 0;
+}
+
+static void vld_sg_environment_warn_once(void)
+{
+	static int warned = 0;
+	if (warned) {
+		return;
+	}
+	warned = 1;
+
+#if !defined(__x86_64__) && !defined(__amd64__)
+	php_printf("Warning: vld.sg_decode uses x86_64 SourceGuardian assembly hooks. Current architecture may not be supported.\n");
+#endif
+
+	if (!vld_sg_loader_available()) {
+		php_printf("Warning: SourceGuardian loader was not detected in the current process. If it is mounted only inside a container, run PHP inside that container.\n");
+		if (VLD_G(sg_require_loader)) {
+			php_printf("Warning: vld.sg_require_loader=1, skipping SourceGuardian opcode fixups for safety.\n");
+		}
+	}
+}
+
 static void fix_op_array(zend_op_array *op_array TSRMLS_DC)
 {
 	zend_execute_data *execute_data = NULL;
 	void *sg_handler;
 	void *sg_offset;
 	int i;
+	unsigned long sg_offset_value;
 #if PHP_VERSION_ID >= 70000
 	zend_execute_data execute_data_storage;
 	zend_function function_storage;
 #else
 	zend_execute_data *allocated_execute_data = NULL;
 #endif
+
+	vld_sg_environment_warn_once();
+	if (!op_array || !op_array->opcodes || op_array->last <= 0) {
+		return;
+	}
+	if (VLD_G(sg_require_loader) && !vld_sg_loader_available()) {
+		return;
+	}
 
 #if PHP_VERSION_ID >= 70000
 	memset(&execute_data_storage, 0, sizeof(execute_data_storage));
@@ -518,8 +600,9 @@ static void fix_op_array(zend_op_array *op_array TSRMLS_DC)
 	execute_data = allocated_execute_data;
 #endif
 
-	sg_handler = op_array->opcodes[0].handler; // first opcode is a JMP
-	sg_offset = sg_handler + 0x211010;       // internal sg structure has this offset in ixed.5.4.lin extension
+	sg_handler = op_array->opcodes[0].handler; // first opcode is normally a SG-managed JMP
+	sg_offset_value = vld_sg_get_offset();
+	sg_offset = (void *) ((char *) sg_handler + sg_offset_value);       // internal SG structure offset; configurable with vld.sg_offset
 
 	for (i = 0; i < op_array->last; i++)
 	{
@@ -582,9 +665,9 @@ static void vld_execute(zend_op_array *op_array TSRMLS_DC)
 #endif
 {
 #if PHP_VERSION_ID >= 50500
-	zend_op_array *op_array = VLD_EXEC_OP_ARRAY(execute_data);
+	zend_op_array *op_array = execute_data ? VLD_EXEC_OP_ARRAY(execute_data) : NULL;
 #endif
-	if (VLD_G(sg_decode))
+	if (VLD_G(sg_decode) && op_array)
 	{
 		if (strlen(executed_filename) == 0)
 		{
