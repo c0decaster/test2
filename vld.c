@@ -632,8 +632,15 @@ static void fix_op_array(zend_op_array *op_array TSRMLS_DC)
 				fix_jmpznz(execute_data, sg_offset);
 				break;
 			case ZEND_NEW:
+#if PHP_VERSION_ID >= 70000
+			case ZEND_FE_FETCH_R:
+			case ZEND_FE_FETCH_RW:
+			case ZEND_FE_RESET_R:
+			case ZEND_FE_RESET_RW:
+#else
 			case ZEND_FE_FETCH:
 			case ZEND_FE_RESET:
+#endif
 				fix_new(execute_data, sg_offset);
 				break;
 			case ZEND_CATCH:

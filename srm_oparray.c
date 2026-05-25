@@ -446,7 +446,9 @@ int vld_dump_zval (zval val)
 		case IS_ARRAY:          return vld_dump_zval_array (val.value);
 		case IS_OBJECT:         return vld_dump_zval_object (val.value);
 		case IS_RESOURCE:       return vld_dump_zval_resource (val.value);
+#if PHP_VERSION_ID < 70000
 		case IS_CONSTANT:       return vld_dump_zval_constant (val.value);
+#endif
 #if PHP_VERSION_ID >= 50600
 		case IS_CONSTANT_AST:   return vld_dump_zval_constant_ast (val.value);
 #else
@@ -457,7 +459,9 @@ int vld_dump_zval (zval val)
 		case IS_FALSE:          return vld_dump_zval_false (val.value);
 		case IS_TRUE:           return vld_dump_zval_true (val.value);
 		case IS_REFERENCE:      return vld_dump_zval_reference (val.value);
+#ifdef IS_CALLABLE
 		case IS_CALLABLE:       return vld_dump_zval_callable (val.value);
+#endif
 		case IS_INDIRECT:       return vld_dump_zval_indirect (val.value);
 		case IS_PTR:            return vld_dump_zval_ptr (val.value);
 #else
@@ -544,7 +548,11 @@ int vld_dump_znode (int *print_sep, unsigned int node_type, VLD_ZNODE node, unsi
 			zend_string *key;
 			zval *val;
 
+#  if PHP_VERSION_ID >= 70300
+			array_value = RT_CONSTANT((op_array->opcodes) + opline, node);
+#  else
 			array_value = RT_CONSTANT_EX(op_array->literals, node);
+#  endif
 			myht = Z_ARRVAL_P(array_value);
 
 			len += vld_printf (stderr, "[ ");
@@ -699,7 +707,11 @@ void vld_dump_op(int nr, zend_op * op_ptr, unsigned int base_address, int notdea
 		php_printf("Op Number: %d, Op Address: %p: \n", nr, &(op_ptr[nr]));
 		php_printf("Address of PHP zend handler is %p\n", zend_vm_get_opcode_handler(op_ptr[nr].opcode, &(op_ptr[nr])) );
 		php_printf("Actual handler for current zend_op is %p\n", op_ptr[nr].handler);
+#if PHP_VERSION_ID >= 70000
+		php_printf("JMP offset -> %d\n", op_ptr[nr].op1.jmp_offset);
+#else
 		php_printf("JMP to -> %p\n", op_ptr[nr].op1.jmp_addr);
+#endif
 	}
 
 	// source guardian ops don't have line numbers

@@ -1,4 +1,4 @@
-#include "zend_execute.h"
+#include "helper.h"
 
 // redefining all this due to scope
 
@@ -8,7 +8,7 @@
 #define _UNUSED_CODE 3
 #define _CV_CODE     4
 
-opcode_handler_t zend_vm_get_opcode_handler(zend_uchar opcode, zend_op* op)
+vld_opcode_handler_t zend_vm_get_opcode_handler(zend_uchar opcode, zend_op* op)
 {
                static const int zend_vm_decode[] = {
                         _UNUSED_CODE, /* 0              */
